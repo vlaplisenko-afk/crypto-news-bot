@@ -45,7 +45,9 @@ def send_telegram(text: str):
         "disable_web_page_preview": True
     }
     try:
-        requests.post(url, json=payload, timeout=15)
+        response = requests.post(url, json=payload, timeout=15)
+        print("Telegram response status:", response.status_code)
+        print("Telegram response body:", response.text)
     except Exception as e:
         print("Ошибка отправки в Telegram:", e)
 
