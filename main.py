@@ -61,7 +61,7 @@ RSS_FEEDS = [
 MAX_MESSAGE_LEN = 3900
 MOVE_THRESHOLD_24H = 20.0
 NEWS_MAX_AGE_HOURS = 24
-GROQ_MODEL = "openai/gpt-oss-20b"
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 
 def send_telegram(text: str):
@@ -187,7 +187,7 @@ def format_price_line(coin, price_info):
     return f"💰 {price_str} {arrow} {sign}{change_24:.2f}% (24ч)"
 
 
-def _call_groq(prompt, max_tokens=1500, temperature=0.3):
+def _call_groq(prompt, max_tokens=800, temperature=0.2):
     client = Groq(api_key=GROQ_API_KEY)
     completion = client.chat.completions.create(
         model=GROQ_MODEL,
@@ -196,48 +196,51 @@ def _call_groq(prompt, max_tokens=1500, temperature=0.3):
         max_tokens=max_tokens
     )
     choice = completion.choices[0].message
-    content = (choice.content or "").strip()
-    return content
+    return (choice.content or "").strip()
 
 
-def analyze_coin(coin, news_list, price_info):
-    """Если новостей нет — None. Если ИИ не ответил — None."""
+def analyze_coin(coin, news_list):
+    """Анализ новостей монеты. Если новостей нет — None."""
     if not news_list:
         return None
 
     news_list = news_list[:6]
 
-    prompt = f"""Ты крипто-аналитик. Проанализируй ТОЛЬКО монету {coin}.
-
-Новости по {coin} за последние 24 часа:
-"""
+    news_text = ""
     for i, n in enumerate(news_list, 1):
-        prompt += f"\n{i}. [{n['source']}, {n['date']}] {n['title']}\n{n['summary']}\n"
+        news_text += f"\n{i}. Источник: {n['source']}, дата: {n['date']}\nЗаголовок: {n['title']}\nОписание: {n['summary']}\n"
 
-    prompt += f"""
+    prompt = f"""Ты профессиональный крипто-аналитик. Проанализируй новости ТОЛЬКО по монете {coin}.
 
-ПРАВИЛА:
-1. Отвечай ТОЛЬКО на русском.
-2. Пиши ТОЛЬКО про {coin}.
-3. НЕ используй символы ** и *.
-4. Объедини все новости в одну короткую сводку.
-5. Укажи влияние на цену.
-6. Максимум 5 строк.
+НОВОСТИ:
+{news_text}
 
-Формат строго:
+СТРОГИЕ ПРАВИЛА (нарушение недопустимо):
+1. Весь ответ — ИСКЛЮЧИТЕЛЬНО на русском языке.
+2. Английский текст запрещён. Заголовки новостей ПЕРЕВЕДИ на русский. Единственные допустимые английские слова — тикер {coin} и названия компаний (Binance, Coinbase, Ledger и т.п.).
+3. Пиши ТОЛЬКО про {coin}. Не упоминай другие монеты и тикеры.
+4. НЕ используй символы ** и *. Только HTML-теги <b>...</b> для меток.
+5. Соблюдай грамматику русского языка. Проверь согласование рода, числа и падежа (например, «Возможно падение», а не «Возможен падение»).
+6. Объедини все новости в одну краткую сводку.
+7. Формат источника строго: (Источник, ДД.ММ ЧЧ:ММ).
+8. Максимум 5 строк.
 
-<b>Суть:</b> одна фраза по главной новости с источником и датой
+ФОРМАТ ОТВЕТА (строго):
+
+<b>Суть:</b> одна короткая фраза на русском с источником и датой
 <b>Тон:</b> Бычий / Медвежий / Нейтральный
 <b>Важность:</b> X/10
-<b>Влияние на цену:</b> коротко
-<b>Рекомендация:</b> одно действие
+<b>Влияние на цену:</b> коротко и грамматически верно
+<b>Рекомендация:</b> одно короткое действие
+
+Начни ответ сразу с метки <b>Суть:</b> без вступлений.
 """
 
     try:
         text = _call_groq(prompt)
         if not text:
             print(f"[WARN] Пустой ответ ИИ для {coin}, повтор...")
-            text = _call_groq(prompt, temperature=0.5)
+            text = _call_groq(prompt, temperature=0.4)
         if not text:
             return None
         return text
@@ -250,7 +253,7 @@ def build_coin_block(coin, news, price_info):
     block = f"\n🪙 <b>{coin}</b>\n"
     block += format_price_line(coin, price_info) + "\n\n"
 
-    analysis = analyze_coin(coin, news, price_info)
+    analysis = analyze_coin(coin, news)
     if analysis:
         block += analysis + "\n"
     else:
