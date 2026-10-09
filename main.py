@@ -114,6 +114,8 @@ def analyze_with_ai(news_list):
 Пиши коротко и по делу. Используй HTML <b> для заголовков.
 """
 
+    print("=== DEBUG: Использую модель llama-3.1-8b-instant ===")
+
     client = Groq(api_key=GROQ_API_KEY)
 
     try:
