@@ -14,12 +14,12 @@ COINS = {
     "ENA": ["ethena", "ena"],
     "STRK": ["starknet", "strk", "stark"],
     "NOT": ["notcoin", "not"],
-    "TON": ["toncoin", "ton", "telegram open network"],
+    "TON": ["toncoin", "telegram open network", "the open network", "$ton"],
     "NEAR": ["near protocol", "near"],
     "OP": ["optimism", "op token"],
     "KAS": ["kaspa", "kas"],
     "ARB": ["arbitrum", "arb"],
-    "TIA": ["celestia", "tia"],
+    "TIA": ["celestia", "$tia"],
     "ZIL": ["zilliqa", "zil"],
     "SOL": ["solana", "sol"]
 }
@@ -60,7 +60,9 @@ RSS_FEEDS = [
 
 MAX_MESSAGE_LEN = 3900
 MOVE_THRESHOLD_24H = 20.0
-NEWS_MAX_AGE_HOURS = 24  # Глубина: новости не старше 24 часов
+NEWS_MAX_AGE_HOURS = 24
+GROQ_MODEL = "openai/gpt-oss-20b"
+
 
 def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -78,26 +80,24 @@ def send_telegram(text: str):
     except Exception as e:
         print("Ошибка отправки в Telegram:", e)
 
+
 def get_news():
-    """Собирает новости, фильтрует по времени и сохраняет дату/источник."""
     all_entries = []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=NEWS_MAX_AGE_HOURS)
-    
+
     for url in RSS_FEEDS:
         try:
             feed = feedparser.parse(url)
-            # Увеличиваем глубину: смотрим 40 записей из каждой ленты
             for entry in feed.entries[:40]:
-                # Проверяем дату публикации
                 published_parsed = entry.get("published_parsed") or entry.get("updated_parsed")
                 if published_parsed:
                     pub_dt = datetime(*published_parsed[:6], tzinfo=timezone.utc)
                     if pub_dt < cutoff:
-                        continue  # слишком старая новость
+                        continue
                     date_str = pub_dt.strftime("%d.%m %H:%M")
                 else:
                     date_str = "дата неизвестна"
-                
+
                 all_entries.append({
                     "title": entry.get("title", ""),
                     "summary": entry.get("summary", "")[:450],
@@ -109,6 +109,7 @@ def get_news():
             print(f"Ошибка RSS {url}: {e}")
     return all_entries
 
+
 def filter_relevant_news(entries):
     grouped = {}
     for entry in entries:
@@ -117,6 +118,7 @@ def filter_relevant_news(entries):
             if any(kw in text for kw in keywords):
                 grouped.setdefault(coin, []).append(entry)
     return grouped
+
 
 def get_prices(coins):
     gecko_ids = [COIN_TO_GECKO[c] for c in coins if c in COIN_TO_GECKO]
@@ -144,6 +146,7 @@ def get_prices(coins):
         print("Ошибка получения цен:", e)
         return {}
 
+
 def check_big_moves(prices):
     for coin, info in prices.items():
         change = info.get("change_24h")
@@ -169,6 +172,7 @@ def check_big_moves(prices):
         )
         send_telegram(msg)
 
+
 def format_price_line(coin, price_info):
     if not price_info or price_info.get("price") is None:
         return "💰 цена недоступна"
@@ -182,74 +186,80 @@ def format_price_line(coin, price_info):
         price_str = f"${price:,.2f}"
     return f"💰 {price_str} {arrow} {sign}{change_24:.2f}% (24ч)"
 
+
+def _call_groq(prompt, max_tokens=1500, temperature=0.3):
+    client = Groq(api_key=GROQ_API_KEY)
+    completion = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=max_tokens
+    )
+    choice = completion.choices[0].message
+    content = (choice.content or "").strip()
+    return content
+
+
 def analyze_coin(coin, news_list, price_info):
-    """Анализ всех новостей монеты с указанием даты и источника."""
+    """Если новостей нет — None. Если ИИ не ответил — None."""
     if not news_list:
-        return (f"<b>Суть:</b> новых значимых новостей по {coin} нет.\n"
-                f"<b>Тон:</b> Нейтральный\n"
-                f"<b>Важность:</b> 2/10\n"
-                f"<b>Влияние на цену:</b> движение в основном за общим рынком.\n"
-                f"<b>Рекомендация:</b> наблюдать, резких действий не требуется.")
+        return None
 
     news_list = news_list[:6]
 
-    prompt = f"""Ты профессиональный крипто-аналитик. Проанализируй ТОЛЬКО монету {coin}.
+    prompt = f"""Ты крипто-аналитик. Проанализируй ТОЛЬКО монету {coin}.
 
-Новости по {coin} (за последние 24 часа):
+Новости по {coin} за последние 24 часа:
 """
     for i, n in enumerate(news_list, 1):
         prompt += f"\n{i}. [{n['source']}, {n['date']}] {n['title']}\n{n['summary']}\n"
 
     prompt += f"""
 
-ЖЁСТКИЕ ПРАВИЛА ВЫВОДА:
-1. Отвечай ТОЛЬКО на русском языке. Английский запрещён.
-2. Пиши ТОЛЬКО про {coin}. Не упоминай другие монеты и тикеры.
-3. НЕ используй символы ** и * для выделения. Только HTML <b>метки</b>.
-4. Проанализируй ВСЕ переданные новости и объедини их в одну краткую сводку.
-5. Обязательно укажи, КАК это повлияет на цену.
-6. В разделе "Суть" укажи источник и дату главной новости, например: (CoinDesk, 09.10 14:30).
-7. Максимум 6 строк.
+ПРАВИЛА:
+1. Отвечай ТОЛЬКО на русском.
+2. Пиши ТОЛЬКО про {coin}.
+3. НЕ используй символы ** и *.
+4. Объедини все новости в одну короткую сводку.
+5. Укажи влияние на цену.
+6. Максимум 5 строк.
 
-Формат (строго):
+Формат строго:
 
-<b>Суть:</b> одна короткая фраза, объединяющая главные новости, с указанием источника и даты
+<b>Суть:</b> одна фраза по главной новости с источником и датой
 <b>Тон:</b> Бычий / Медвежий / Нейтральный
 <b>Важность:</b> X/10
-<b>Влияние на цену:</b> коротко, что будет с ценой (рост/падение/боковик и почему)
-<b>Рекомендация:</b> одно короткое действие
+<b>Влияние на цену:</b> коротко
+<b>Рекомендация:</b> одно действие
 """
 
-    client = Groq(api_key=GROQ_API_KEY)
     try:
-        completion = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=500
-        )
-        text = completion.choices[0].message.content
-        if not text or not text.strip():
-            return (f"<b>Суть:</b> ИИ не вернул анализ по {coin}.\n"
-                    f"<b>Тон:</b> Нейтральный\n"
-                    f"<b>Важность:</b> 2/10\n"
-                    f"<b>Влияние на цену:</b> неопределённо.\n"
-                    f"<b>Рекомендация:</b> наблюдать.")
-        return text.strip()
+        text = _call_groq(prompt)
+        if not text:
+            print(f"[WARN] Пустой ответ ИИ для {coin}, повтор...")
+            text = _call_groq(prompt, temperature=0.5)
+        if not text:
+            return None
+        return text
     except Exception as e:
-        return (f"<b>Суть:</b> ошибка анализа ИИ по {coin}.\n"
-                f"<b>Тон:</b> Нейтральный\n"
-                f"<b>Важность:</b> 2/10\n"
-                f"<b>Влияние на цену:</b> неопределённо.\n"
-                f"<b>Рекомендация:</b> наблюдать.")
+        print(f"[ERROR] Groq для {coin}: {e}")
+        return None
+
 
 def build_coin_block(coin, news, price_info):
     block = f"\n🪙 <b>{coin}</b>\n"
     block += format_price_line(coin, price_info) + "\n\n"
-    block += analyze_coin(coin, news, price_info) + "\n"
+
+    analysis = analyze_coin(coin, news, price_info)
+    if analysis:
+        block += analysis + "\n"
+    else:
+        block += "<i>Свежих значимых новостей за 24ч нет.</i>\n"
     return block
 
+
 def send_long_message(header, blocks):
+    """Блоки не режутся: не влез — уходит целиком в следующее сообщение."""
     messages = []
     current = header
 
@@ -258,7 +268,7 @@ def send_long_message(header, blocks):
             if current.strip():
                 messages.append(current)
                 current = ""
-            chunk = block[:MAX_MESSAGE_LEN - 30] + "\n… (обрезано)\n"
+            chunk = block[:MAX_MESSAGE_LEN - 40] + "\n… (обрезано)\n"
             messages.append(chunk)
             continue
 
@@ -271,8 +281,10 @@ def send_long_message(header, blocks):
     if current.strip():
         messages.append(current)
 
-    for m in messages:
+    for i, m in enumerate(messages, 1):
+        print(f"Отправка сообщения {i}/{len(messages)}, длина {len(m)}")
         send_telegram(m)
+
 
 def main():
     print(f"Запуск бота: {datetime.now(timezone.utc)}")
@@ -298,6 +310,7 @@ def main():
 
     send_long_message(header, blocks)
     print("Отчёт отправлен")
+
 
 if __name__ == "__main__":
     main()
