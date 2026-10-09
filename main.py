@@ -3,7 +3,6 @@ import feedparser
 import requests
 from datetime import datetime, timezone
 from groq import Groq
-import time
 
 # === НАСТРОЙКИ ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -26,7 +25,6 @@ COINS = {
     "SOL": ["solana", "sol"]
 }
 
-# Бесплатные RSS-источники
 RSS_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://decrypt.co/feed",
@@ -45,9 +43,9 @@ def send_telegram(text: str):
         "disable_web_page_preview": True
     }
     try:
-        response = requests.post(url, json=payload, timeout=15)
-        print("Telegram response status:", response.status_code)
-        print("Telegram response body:", response.text)
+        response = requests.post(url, json=payload, timeout=20)
+        print("Telegram status:", response.status_code)
+        print("Telegram response:", response.text)
     except Exception as e:
         print("Ошибка отправки в Telegram:", e)
 
@@ -56,12 +54,11 @@ def get_news():
     for url in RSS_FEEDS:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:12]:  # берём свежие
+            for entry in feed.entries[:15]:
                 all_entries.append({
                     "title": entry.get("title", ""),
-                    "summary": entry.get("summary", "")[:400],
+                    "summary": entry.get("summary", "")[:450],
                     "link": entry.get("link", ""),
-                    "published": entry.get("published", ""),
                     "source": feed.feed.get("title", "Unknown")
                 })
         except Exception as e:
@@ -77,7 +74,7 @@ def filter_relevant_news(entries):
             if any(kw in text for kw in keywords):
                 matched_coins.append(coin)
         if matched_coins:
-            entry["coins"] = matched_coins
+            entry["coins"] = list(set(matched_coins))
             relevant.append(entry)
     return relevant
 
@@ -85,47 +82,46 @@ def analyze_with_ai(news_list):
     if not news_list:
         return "За последний час важных новостей по твоим монетам почти нет."
 
-    # Берём максимум 10 самых свежих
     news_list = news_list[:10]
 
-    prompt = f"""Ты профессиональный крипто-аналитик. Проанализируй эти новости и сделай краткий умный отчёт на русском.
+    prompt = f"""Ты профессиональный крипто-аналитик. Сделай краткий умный отчёт на русском языке.
 
 Новости:
 """
     for i, n in enumerate(news_list, 1):
-        prompt += f"\n{i}. [{', '.join(n['coins'])}] {n['title']}\n{n['summary']}\nИсточник: {n['source']}\nСсылка: {n['link']}\n"
+        prompt += f"\n{i}. [{', '.join(n['coins'])}] {n['title']}\n{n['summary']}\nИсточник: {n['source']}\n"
 
     prompt += """
 
-Сделай отчёт строго в таком формате:
+Формат ответа строго такой:
 
-🔥 <b>Краткий обзор за час</b>
+🔥 <b>Краткий обзор</b>
 
-Для каждой важной новости:
+Для каждой важной новости пиши:
 • Монеты: ...
 • Суть: 1-2 предложения
 • Тон: Бычий / Медвежий / Нейтральный
-• Важность: 1-10
-• Влияние на цену: коротко (например: "может поддержать рост" / "давление на цену" / "нейтрально")
+• Важность: от 1 до 10
+• Влияние на цену: коротко
 • Рекомендация: ...
 
 В конце:
 📊 <b>Общий вывод</b>
-• Какие монеты в фокусе
-• Общий настрой рынка по этим монетам
-• Есть ли что-то срочное
+• Какие монеты сейчас в фокусе
+• Общий настрой
+• Есть ли срочные события
 
-Пиши коротко, по делу, без воды. Используй HTML-теги <b> для жирного.
+Пиши коротко и по делу. Используй HTML <b> для заголовков.
 """
 
     client = Groq(api_key=GROQ_API_KEY)
-    
+
     try:
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=1800
+            temperature=0.25,
+            max_tokens=1600
         )
         return completion.choices[0].message.content
     except Exception as e:
@@ -133,21 +129,19 @@ def analyze_with_ai(news_list):
 
 def main():
     print(f"Запуск бота: {datetime.now(timezone.utc)}")
-    
+
     entries = get_news()
     relevant = filter_relevant_news(entries)
-    
     print(f"Найдено релевантных новостей: {len(relevant)}")
-    
+
     report = analyze_with_ai(relevant)
-    
+
     header = f"<b>📡 Крипто-новости</b>\n{datetime.now().strftime('%d.%m.%Y %H:%M')} UTC\n\n"
     full_message = header + report
-    
-    # Telegram имеет лимит ~4096 символов
+
     if len(full_message) > 4000:
         full_message = full_message[:3900] + "\n\n... (обрезано)"
-    
+
     send_telegram(full_message)
     print("Отчёт отправлен")
 
