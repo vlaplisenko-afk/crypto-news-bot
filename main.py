@@ -24,6 +24,23 @@ COINS = {
     "SOL": ["solana", "sol"]
 }
 
+# ID монет для CoinGecko
+COIN_TO_GECKO = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "ENA": "ethena",
+    "STRK": "starknet",
+    "NOT": "notcoin",
+    "TON": "the-open-network",
+    "NEAR": "near",
+    "OP": "optimism",
+    "KAS": "kaspa",
+    "ARB": "arbitrum",
+    "TIA": "celestia",
+    "ZIL": "zilliqa",
+    "SOL": "solana"
+}
+
 RSS_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://decrypt.co/feed",
@@ -32,6 +49,7 @@ RSS_FEEDS = [
     "https://theblock.co/rss.xml",
     "https://bitcoinmagazine.com/.rss/full/",
 ]
+
 
 def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -47,6 +65,7 @@ def send_telegram(text: str):
         print("Telegram response:", response.text)
     except Exception as e:
         print("Ошибка отправки в Telegram:", e)
+
 
 def get_news():
     all_entries = []
@@ -64,87 +83,141 @@ def get_news():
             print(f"Ошибка RSS {url}: {e}")
     return all_entries
 
+
 def filter_relevant_news(entries):
-    relevant = []
+    """Возвращает dict: {монета: [новости]}"""
+    grouped = {}
     for entry in entries:
         text = (entry["title"] + " " + entry["summary"]).lower()
-        matched_coins = []
         for coin, keywords in COINS.items():
             if any(kw in text for kw in keywords):
-                matched_coins.append(coin)
-        if matched_coins:
-            entry["coins"] = list(set(matched_coins))
-            relevant.append(entry)
-    return relevant
+                grouped.setdefault(coin, []).append(entry)
+    return grouped
 
-def analyze_with_ai(news_list):
+
+def get_prices(coins):
+    """Получаем цены и изменение за 24ч через CoinGecko."""
+    gecko_ids = [COIN_TO_GECKO[c] for c in coins if c in COIN_TO_GECKO]
+    if not gecko_ids:
+        return {}
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    params = {
+        "ids": ",".join(gecko_ids),
+        "vs_currencies": "usd",
+        "include_24hr_change": "true"
+    }
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        data = r.json()
+        # обратное сопоставление gecko_id -> тикер
+        result = {}
+        for coin in coins:
+            gid = COIN_TO_GECKO.get(coin)
+            if gid and gid in data:
+                result[coin] = {
+                    "price": data[gid].get("usd"),
+                    "change": data[gid].get("usd_24h_change")
+                }
+        return result
+    except Exception as e:
+        print("Ошибка получения цен:", e)
+        return {}
+
+
+def analyze_coin(coin, news_list, price_info):
     if not news_list:
-        return "За последний час важных новостей по твоим монетам почти нет."
+        return None
 
-    news_list = news_list[:10]
+    news_list = news_list[:6]
 
-    prompt = f"""Ты профессиональный крипто-аналитик. Сделай краткий умный отчёт на русском языке.
+    price_line = ""
+    if price_info and price_info.get("price") is not None:
+        price = price_info["price"]
+        change = price_info.get("change") or 0
+        sign = "+" if change >= 0 else ""
+        price_line = f"Текущая цена {coin}: ${price:,.2f} ({sign}{change:.2f}% за 24ч)\n\n"
 
-Новости:
+    prompt = f"""Ты крипто-аналитик. Проанализируй ТОЛЬКО монету {coin}.
+
+{price_line}Новости по {coin}:
 """
     for i, n in enumerate(news_list, 1):
-        prompt += f"\n{i}. [{', '.join(n['coins'])}] {n['title']}\n{n['summary']}\nИсточник: {n['source']}\n"
+        prompt += f"\n{i}. {n['title']}\n{n['summary']}\n"
 
-    prompt += """
+    prompt += f"""
 
-Формат ответа строго такой:
+Правила вывода (строго):
+- Пиши только про {coin}, не упоминай другие монеты
+- НЕ используй символы ** и * для выделения
+- Не дублируй заголовки новостей, дай выжимку
+- Кратко, по делу, максимум 5-6 строк
 
-🔥 <b>Краткий обзор</b>
+Формат (строго):
 
-Для каждой важной новости пиши:
-• Монеты: ...
-• Суть: 1-2 предложения
-• Тон: Бычий / Медвежий / Нейтральный
-• Важность: от 1 до 10
-• Влияние на цену: коротко
-• Рекомендация: ...
+Суть: одна короткая фраза по главной новости
+Тон: Бычий / Медвежий / Нейтральный
+Важность: X/10
+Влияние: коротко о влиянии на цену
+Рекомендация: одно короткое действие
 
-В конце:
-📊 <b>Общий вывод</b>
-• Какие монеты сейчас в фокусе
-• Общий настрой
-• Есть ли срочные события
-
-Пиши коротко и по делу. Используй HTML <b> для заголовков.
+Используй HTML <b>только</b> для меток (Суть, Тон, Важность, Влияние, Рекомендация).
 """
 
-    print("=== DEBUG: Использую модель llama-3.1-8b-instant ===")
-
     client = Groq(api_key=GROQ_API_KEY)
-
     try:
         completion = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.25,
-            max_tokens=1600
+            temperature=0.3,
+            max_tokens=500
         )
-        return completion.choices[0].message.content
+        return completion.choices[0].message.content.strip()
     except Exception as e:
-        return f"Ошибка анализа ИИ: {e}"
+        return f"Ошибка анализа ИИ для {coin}: {e}"
+
 
 def main():
     print(f"Запуск бота: {datetime.now(timezone.utc)}")
 
     entries = get_news()
-    relevant = filter_relevant_news(entries)
-    print(f"Найдено релевантных новостей: {len(relevant)}")
+    grouped = filter_relevant_news(entries)
+    print(f"Монет с новостями: {len(grouped)}")
 
-    report = analyze_with_ai(relevant)
+    if not grouped:
+        send_telegram("📡 Крипто-новости\n\nЗа последнее время важных новостей по твоим монетам нет.")
+        return
 
-    header = f"<b>📡 Крипто-новости</b>\n{datetime.now().strftime('%d.%m.%Y %H:%M')} UTC\n\n"
-    full_message = header + report
+    prices = get_prices(list(grouped.keys()))
+
+    header = f"<b>📡 Крипто-новости</b>\n{datetime.now().strftime('%d.%m.%Y %H:%M')} UTC\n"
+    parts = [header]
+
+    for coin, news in grouped.items():
+        block = f"\n🪙 <b>{coin}</b>\n"
+
+        p = prices.get(coin)
+        if p and p.get("price") is not None:
+            change = p.get("change") or 0
+            sign = "+" if change >= 0 else ""
+            arrow = "🟢" if change >= 0 else "🔴"
+            block += f"💰 ${p['price']:,.2f} {arrow} {sign}{change:.2f}% (24ч)\n\n"
+        else:
+            block += "💰 цена недоступна\n\n"
+
+        analysis = analyze_coin(coin, news, p)
+        if analysis:
+            block += analysis + "\n"
+
+        parts.append(block)
+
+    full_message = "\n".join(parts)
 
     if len(full_message) > 4000:
         full_message = full_message[:3900] + "\n\n... (обрезано)"
 
     send_telegram(full_message)
     print("Отчёт отправлен")
+
 
 if __name__ == "__main__":
     main()
