@@ -36,7 +36,6 @@ COIN_TO_GECKO = {
     "ARB": "arbitrum", "TIA": "celestia", "ZIL": "zilliqa", "SOL": "solana"
 }
 
-# Пары для Binance (для загрузки свечей)
 COIN_TO_BINANCE = {
     "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
     "ENA": "ENAUSDT", "STRK": "STRKUSDT", "NOT": "NOTUSDT",
@@ -64,7 +63,7 @@ MAX_MESSAGE_LEN = 3900
 MOVE_THRESHOLD_24H = 20.0
 NEWS_MAX_AGE_HOURS = 24
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-KLINE_LIMIT = 100  # сколько часовых свечей брать для расчёта индикаторов
+KLINE_LIMIT = 100
 
 
 def send_telegram(text: str):
@@ -122,7 +121,6 @@ def filter_relevant_news(entries):
 
 
 def get_market_data(coins):
-    """Один запрос: цена, изменение за 24ч, объём, капитализация."""
     gecko_ids = [COIN_TO_GECKO[c] for c in coins if c in COIN_TO_GECKO]
     if not gecko_ids:
         return {}
@@ -154,7 +152,6 @@ def get_market_data(coins):
 
 
 def get_klines(coin, limit=KLINE_LIMIT):
-    """Загрузка часовых свечей с Binance. Возвращает DataFrame или None."""
     symbol = COIN_TO_BINANCE.get(coin)
     if not symbol:
         return None
@@ -179,13 +176,11 @@ def get_klines(coin, limit=KLINE_LIMIT):
 
 
 def compute_indicators(df):
-    """RSI(14), MACD(12,26,9), поддержка/сопротивление за 20 свечей."""
     if df is None or len(df) < 30:
         return None
 
     close = df["close"]
 
-    # RSI(14)
     delta = close.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
@@ -195,14 +190,12 @@ def compute_indicators(df):
     rsi = 100 - (100 / (1 + rs))
     rsi_val = rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else None
 
-    # MACD
     ema_fast = close.ewm(span=12, adjust=False).mean()
     ema_slow = close.ewm(span=26, adjust=False).mean()
     macd_line = ema_fast - ema_slow
     signal_line = macd_line.ewm(span=9, adjust=False).mean()
     macd_hist = (macd_line - signal_line).iloc[-1]
 
-    # Поддержка/сопротивление
     support = df["low"].rolling(20).min().iloc[-1]
     resistance = df["high"].rolling(20).max().iloc[-1]
     last_price = close.iloc[-1]
@@ -217,13 +210,10 @@ def compute_indicators(df):
 
 
 def format_indicator_line(indicators):
-    """Строка с техническими индикаторами."""
     if not indicators:
         return ""
-
     parts = []
 
-    # RSI
     rsi = indicators.get("rsi")
     if rsi is not None:
         if rsi >= 70:
@@ -234,13 +224,11 @@ def format_indicator_line(indicators):
             rsi_note = "нейтрально"
         parts.append(f"RSI {rsi:.0f} ({rsi_note})")
 
-    # MACD
     hist = indicators.get("macd_hist")
     if hist is not None:
         direction = "бычий" if hist > 0 else "медвежий"
         parts.append(f"MACD {hist:+.4g} ({direction})")
 
-    # Поддержка/сопротивление
     support = indicators.get("support")
     resistance = indicators.get("resistance")
     last = indicators.get("last_price")
@@ -256,7 +244,6 @@ def format_indicator_line(indicators):
 
 
 def format_liquidity_line(market_info):
-    """Ликвидность по отношению объёма к капитализации."""
     if not market_info:
         return ""
     volume = market_info.get("volume")
@@ -352,14 +339,12 @@ def build_coin_block(coin, news, market_info):
     block = f"\n🪙 <b>{coin}</b>\n"
     block += format_price_line(coin, market_info) + "\n"
 
-    # Технические индикаторы
     klines = get_klines(coin)
     indicators = compute_indicators(klines)
     indicator_line = format_indicator_line(indicators)
     if indicator_line:
         block += indicator_line
 
-    # Ликвидность
     liq_line = format_liquidity_line(market_info)
     if liq_line:
         block += liq_line
@@ -375,7 +360,6 @@ def build_coin_block(coin, news, market_info):
 
 
 def send_long_message(header, blocks):
-    """Разбивает отчёт на несколько сообщений, не режет блоки посередине."""
     messages = []
     current = header
     for block in blocks:
@@ -409,7 +393,6 @@ def main():
     market_data = get_market_data(all_coins)
     print(f"Получены рыночные данные: {len(market_data)}")
 
-    # Срочные оповещения при изменении >= 20% за 24ч
     for coin, info in market_data.items():
         change = info.get("change_24h")
         if change is None or abs(change) < MOVE_THRESHOLD_24H:
